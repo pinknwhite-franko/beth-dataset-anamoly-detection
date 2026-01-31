@@ -3,11 +3,13 @@ import numpy as np
 import pandas as pd
 from collections import Counter
 import math
+import numpy as np
 
 class FeatureBuilder:
     def __init__(self):
         self.col_freq_maps = {}                 # {(col): DataFrame with columns [hostName, col, col_freq]}
-        self.parent_process_table = None        # parent table contains indexed by (hostName, processId)
+        # self.parent_process_table = None        # parent table contains indexed by (hostName, processId)
+        self.parent_lookup = {}
 
 
     def _stack_diversity(self, stack):
@@ -47,23 +49,30 @@ class FeatureBuilder:
         '''
         return int(ns == 4026531840)
 
-    def build_parent_lookup(self):
+    def build_parent_lookup(self, df):
+        parent_process_table = df[["hostName", "processId", "processName", "userId","timestamp"]].drop_duplicates()
+        parent_process_table = parent_process_table.rename(
+            columns={
+                    "processId": "parentProcessId",
+                    "processName": "parentProcessName", 
+                    "userId": "parentUserId"
+                    })
         # replace parent_process_table with this
-        df = self.parent_process_table.sort_values(["hostName", "processId", "parent_timestamp"])
+        df = parent_process_table.sort_values(["hostName", "parentProcessId", "timestamp"])
 
-        self._parent_lookup = {}
-        for (host, pid), g in df.groupby(["hostName", "processId"], sort=False):
+        for (host, pid), g in df.groupby(["hostName", "parentProcessId"], sort=False):
             # store as numpy arrays for speed
-            ts = g["parent_timestamp"].to_numpy()
+            ts = g["timestamp"].to_numpy()
             # store whole rows as dict-like records
             records = g.to_dict("records")
-            self._parent_lookup[(host, pid)] = (ts, records)
+            self.parent_lookup[(host, pid)] = (ts, records)
     
     def _find_parent_process(self, row):
         key = (row["hostName"], row["parentProcessId"])
-        data = self._parent_lookup.get(key)
+        data = self.parent_lookup.get(key)
+
         if data is None:
-            return None  
+            return row
 
         ts, records = data
         t = row["timestamp"]
@@ -71,41 +80,14 @@ class FeatureBuilder:
         # index of rightmost parent_timestamp < t
         i = np.searchsorted(ts, t, side="left") - 1
         if i < 0:
-            return None  
+            return row
+        
+        # append the data from records[i] to row
+        parent_record = records[i]
+        row["parentProcessName"] = parent_record["parentProcessName"]
+        row["parentUserId"] = parent_record["parentUserId"]
 
-        return records[i]
-
-
-    # def _find_parent_process(self, row):
-
-    #     # print(self.parent_process_table.head(10))
-    #     # df = df[["hostName", "processId", "parentProcessId", "timestamp"]].groupby(["hostName", "processId"])
-    #     timestamp = row['timestamp']
-    #     host = row['hostName']
-    #     ppid = row['parentProcessId']
-    #     # print((host, ppid, timestamp))
-    #     # Find parent process entries that occurred before the child process timestamp
-    #     if ppid in self.parent_process_table.index.get_level_values(1):
-    #         parent_rows = self.parent_process_table.loc[(host, ppid)]
-    #         # print(parent_rows["parent_timestamp"])
-    #         # print(parent_rows)
-    #         parent_rows_exist_prior = parent_rows[parent_rows["parent_timestamp"] < timestamp]
-    #         if parent_rows_exist_prior.shape[0] > 0:
-    #             # print((host, ppid), parent_rows)
-    #             result = parent_rows_exist_prior.drop_duplicates().to_dict()
-    #             if len(result['parentProcessName']) > 1:
-    #                 print("Multiple parent process names found:", result['parentProcessName'])
-    #             return parent_rows_exist_prior.drop_duplicates().iloc[-1].to_dict()
-    #         else:
-    #             return "Not Found"
-    #     else:
-    #         return "Not Found"
-    
-    def _append_parent_process_information(self, df):
-        for index, row in df.iterrows():
-            parent_info = self._find_parent_process(row)
-            # print(parent_info)
-
+        return row
     
     # ===========================
     # FIT
@@ -116,18 +98,6 @@ class FeatureBuilder:
         """
 
         df = df_train.copy()
-
-        # # parent lookup table learned from train data only, save it to transform the test data
-        # self.parent_process_table = (
-        #     df[["hostName", "processId", "processName", "userId"]]
-        #     .drop_duplicates()
-        #     .set_index(["hostName", "processId"])
-        #     .rename(columns={"processName": "parentProcessName", "userId": "parentUserId"})
-        # )
-        self._generate_parent_process_table(df)
-        print(self.parent_process_table.head(10))
-        df = self._append_parent_process_information(df)
-        print(df.head(10))
 
         # frequency encoding maps learned from train data only, save it to transform the test data
         self.col_freq_maps = {}
@@ -147,7 +117,6 @@ class FeatureBuilder:
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
 
         df = df.copy()
-
         # What: parentProcessId and as processId mapping to a binary variable should suffice.
         # suggested by research paper
         df['is_parent_system_process'] = df['parentProcessId'].isin([0, 1, 2]).astype(int)
@@ -155,11 +124,8 @@ class FeatureBuilder:
 
         # What: get parent process info and append it to the dataframe
         # Why: get parent process information to expand information on child parent process relationship
-        if self.parent_process_table is not None:
-            df = df.join(
-                self.parent_process_table,
-                on=["hostName", "parentProcessId"]
-            )
+        self.build_parent_lookup(df)
+        df = df.apply(self._find_parent_process, axis=1)
         df["parent_missing"] = df["parentUserId"].isna().astype(int)
 
         # What: Did the child process run under the same user as its parent?
