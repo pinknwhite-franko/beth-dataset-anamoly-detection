@@ -1,18 +1,16 @@
 import ast
+import logging
 import numpy as np
 import pandas as pd
-from collections import Counter
-import math
 import numpy as np
+import hashlib
 
 class FeatureBuilder:
     def __init__(self):
-        self.col_freq_maps = {}                 # {(col): DataFrame with columns [hostName, col, col_freq]}
-        # self.parent_process_table = None        # parent table contains indexed by (hostName, processId)
-        self.parent_lookup = {}
+        self.hash_feature_lookup = {}
 
 
-    def _stack_diversity(self, stack):
+    def _stack_diversity(self, stack) -> float:
         '''
         stack diversity calculate the percentage of stack addresses that are different in a given stack trace
         
@@ -21,7 +19,7 @@ class FeatureBuilder:
         return len(set(stack)) / max(len(stack), 1)
 
     
-    def _stack_jump_std(self, stack):
+    def _stack_jump_std(self, stack) -> float:
         '''
         calculate the standard deviation of the differences between consecutive stack addresses
         to measure the continuity of the stack trace. 
@@ -33,7 +31,7 @@ class FeatureBuilder:
         diffs = [abs(stack[i] - stack[i+1]) for i in range(len(stack)-1)]
         return np.std(diffs)
     
-    def _argument_parse(self, args_str):
+    def _argument_parse(self, args_str) -> list:
         '''
         check if a string representation of a list can be safely evaluated to a Python object.
         
@@ -41,7 +39,7 @@ class FeatureBuilder:
         '''
         return ast.literal_eval(args_str)
     
-    def _mount_ns_binary(self, ns):
+    def _mount_ns_binary(self, ns) -> int:
         '''
         mount_ns_binary check if the mount namespace is the default one.
         
@@ -49,74 +47,62 @@ class FeatureBuilder:
         '''
         return int(ns == 4026531840)
 
-    def build_parent_lookup(self, df):
+    def append_parent_info(self, df) -> pd.DataFrame:
         parent_process_table = df[["hostName", "processId", "processName", "userId","timestamp"]].drop_duplicates()
         parent_process_table = parent_process_table.rename(
             columns={
                     "processId": "parentProcessId",
                     "processName": "parentProcessName", 
-                    "userId": "parentUserId"
-                    })
-        # replace parent_process_table with this
-        df = parent_process_table.sort_values(["hostName", "parentProcessId", "timestamp"])
-
-        for (host, pid), g in df.groupby(["hostName", "parentProcessId"], sort=False):
-            # store as numpy arrays for speed
-            ts = g["timestamp"].to_numpy()
-            # store whole rows as dict-like records
-            records = g.to_dict("records")
-            self.parent_lookup[(host, pid)] = (ts, records)
+                    "userId": "parentUserId",
+                    "timestamp": "parent_timestamp",
+                    }).sort_values(["parent_timestamp","hostName", "parentProcessId"])
+        df = df.sort_values(["timestamp", "hostName", "parentProcessId"])
+        df = pd.merge_asof(
+            df,
+            parent_process_table,
+            left_on="timestamp",
+            right_on="parent_timestamp",
+            by=["hostName", "parentProcessId"],
+            direction="backward",        # parent time <= child time
+            allow_exact_matches=False    # enforce strictly earlier
+        )
+        df = df.drop(columns=["parent_timestamp"])
+        return df
     
-    def _find_parent_process(self, row):
-        key = (row["hostName"], row["parentProcessId"])
-        data = self.parent_lookup.get(key)
-
-        if data is None:
-            return row
-
-        ts, records = data
-        t = row["timestamp"]
-
-        # index of rightmost parent_timestamp < t
-        i = np.searchsorted(ts, t, side="left") - 1
-        if i < 0:
-            return row
-        
-        # append the data from records[i] to row
-        parent_record = records[i]
-        row["parentProcessName"] = parent_record["parentProcessName"]
-        row["parentUserId"] = parent_record["parentUserId"]
-
-        return row
+    def hash(self, feature_name) -> float:
+        # Generate hash, convert to int, then modulo to range (e.g., 1000)
+        numeric_hash = int(hashlib.sha256(feature_name.encode('utf-8')).hexdigest(), 16) % 1000
+        return numeric_hash
+    
+    def hash_features(self, df: pd.DataFrame, feature_cols: list) -> pd.DataFrame:
+        for col in feature_cols:
+            df[f"{col}_hash"] = df[col].apply(lambda x: self.hash(str(x)))
+            self.hash_feature_lookup[col] = df[[col, f"{col}_hash"]].drop_duplicates().to_dict(orient='list')
+        return df
     
     # ===========================
     # FIT
     # ===========================
-    def fit(self, df_train: pd.DataFrame):
-        """
-        Learn frequency encodings from traininbg data
-        """
-
-        df = df_train.copy()
-
-        # frequency encoding maps learned from train data only, save it to transform the test data
-        self.col_freq_maps = {}
-        for col in ['processId','threadId','parentProcessId','userId','mountNamespace','eventId']:
-            counts = (
-                df.groupby(["hostName", col], dropna=False)
-                  .size()
-                  .reset_index(name=f"{col}_freq")
-            )
-            self.col_freq_maps[col] = counts
-        
+    def fit(self, X: pd.DataFrame) -> FeatureBuilder:
+        df = X.copy()
+        df = self.hash_features(df, ['processName','hostName'])
         return self
     
     # ===========================
     # TRANSFORM
     # ===========================
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
 
-        df = df.copy()
+        df = X.copy()
+        # What: Frequency encoding for multiple columns
+        # Why: capture commonality within each host.
+        host_idx = df["hostName"]
+        for col in ['processId','threadId','parentProcessId','userId','mountNamespace','eventId']:
+            key = pd.MultiIndex.from_arrays([host_idx, df[col]])
+            freq = key.value_counts()
+            df[f"{col}_freq"] = key.map(freq).astype(int)
+            df[f"{col}_freq"] = np.log1p(df[f"{col}_freq"])
+
         # What: parentProcessId and as processId mapping to a binary variable should suffice.
         # suggested by research paper
         df['is_parent_system_process'] = df['parentProcessId'].isin([0, 1, 2]).astype(int)
@@ -124,10 +110,7 @@ class FeatureBuilder:
 
         # What: get parent process info and append it to the dataframe
         # Why: get parent process information to expand information on child parent process relationship
-        # build parent lookup tablex
-        self.build_parent_lookup(df)
-        df = df.apply(self._find_parent_process, axis=1)
-        print(df.columns)
+        df = self.append_parent_info(df)
         df["parent_missing"] = df["parentUserId"].isna().astype(int)
 
         # What: Did the child process run under the same user as its parent?
@@ -137,16 +120,11 @@ class FeatureBuilder:
         # What: Binary encoding of userId based on whether it is below 1000 or not.
         # Why: Distinguish between system/OS users and regular users, as system activities often
         df["userId_binary"]  = df["userId"].apply(lambda x: 1 if x < 1000 else 0)
-
-        # What: Frequency encoding for multiple columns
-        # Why:  capture commonality within each host.
-        for col, m in self.col_freq_maps.items():
-            df = df.merge(m, on=["hostName", col], how="left")
-            df[f"{col}_freq"] = df[f"{col}_freq"].fillna(0).astype(int)
+        df["parentUserId_binary"]  = df["parentUserId"].apply(lambda x: 1 if x < 1000 else 0)
 
         # What: Did the parent fork and re-exec itself or spawn a different binary?
         # why: Malicious activity may involve a process spawning a different binary than itself.
-        df["same_process_name_as_parent"] = np.where(df["parentProcessName"].notnull(),(df["processName"] == df["parentProcessName"]).astype(int), -1)
+        df["same_process_name_as_parent"] = np.where(df["parentProcessName"].notnull(),(df["processName"] == df["parentProcessName"]).astype(int), None)
 
         # What: calculate the length of a stackAddresses
         # Why: get information on how much memory does a call use. 
@@ -169,13 +147,47 @@ class FeatureBuilder:
         # Why: arguments containing file paths might indicate file access or manipulation activities.
         df['args'] = df['args'].apply(self._argument_parse)
         df['args_has_path'] = df['args'].apply(lambda x: int(any('pathname' in d['name'] for d in x)))
-        df[['args_has_path', 'args']].head(10)
+        # df[['args_has_path', 'args']].head(10)
 
         # What: mount namespace binary encoding
         # Why: Distinguish between default and custom mount namespaces. all logs with userId ≥1000
         # had a mountNamespace of 4026531840, while some OS
         # userId traffic used different mountNamespace values.
         df['mountNamespace_binary'] = df['mountNamespace'].apply(self._mount_ns_binary)
+
+        # What hash processName, hostName, parentProcessName
+        # Why: convert high cardinality categorical features into numeric features
+        hash_lookup = self.hash_feature_lookup['processName']
+        df['processName_hash'] = df['processName'].map(dict(zip(hash_lookup['processName'], hash_lookup['processName_hash'])))
+        df['parentProcessName_hash'] = df['parentProcessName'].map(dict(zip(hash_lookup['processName'], hash_lookup['processName_hash'])))
+        hash_lookup = self.hash_feature_lookup['hostName']
+        df['hostName_hash'] = df['hostName'].map(dict(zip(hash_lookup['hostName'], hash_lookup['hostName_hash'])))
+
+        df = df[[
+            'eventId',
+            'hostName_hash',
+            'processName_hash',
+            'parentProcessName_hash',
+            'processId_freq', 
+            'threadId_freq', 
+            'parentProcessId_freq',
+            'userId_freq', 
+            'mountNamespace_freq', 
+            'eventId_freq', 
+            'is_system_process',
+            'is_parent_system_process',
+            'userId_binary',
+            'parentUserId_binary',
+            'same_user_as_parent',
+            'same_process_name_as_parent',
+            'stackAddresses_len', 
+            'stackAddresses_jump_std',
+            'stackAddresses_unique_ratio', 
+            'returnValue',
+            'returnValue_is_error', 
+            'argsNum',
+            'args_has_path',
+            'mountNamespace_binary']]
         return df
     
 
