@@ -108,7 +108,7 @@ class FeatureBuilder:
                   .reset_index(name=f"{col}_freq")
             )
             self.col_freq_maps[col] = counts
-
+        
         return self
     
     # ===========================
@@ -124,8 +124,10 @@ class FeatureBuilder:
 
         # What: get parent process info and append it to the dataframe
         # Why: get parent process information to expand information on child parent process relationship
+        # build parent lookup tablex
         self.build_parent_lookup(df)
         df = df.apply(self._find_parent_process, axis=1)
+        print(df.columns)
         df["parent_missing"] = df["parentUserId"].isna().astype(int)
 
         # What: Did the child process run under the same user as its parent?
