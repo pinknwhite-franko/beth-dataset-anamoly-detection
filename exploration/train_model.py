@@ -31,11 +31,16 @@ FeatureBuilder.fit(build_features, X_train)
 df_train = FeatureBuilder.transform(build_features, X_train)
 df_test = FeatureBuilder.transform(build_features, X_test)
 
+print("df_train: ==============================")
 print(df_train.info())
-print(df_test.info()) 
+print(df_train.count())
 
-df_train.to_csv(f"{current_directory}/datasets/processed/feature_engineered_training_data.csv", index=False)
-df_test.to_csv(f"{current_directory}/datasets/processed/feature_engineered_testing_data.csv", index=False)
+print("df_test: ==============================")
+print(df_test.info()) 
+print(df_test.count())
+
+# df_train.to_csv(f"{current_directory}/datasets/processed/feature_engineered_training_data.csv", index=False)
+# df_test.to_csv(f"{current_directory}/datasets/processed/feature_engineered_testing_data.csv", index=False)
 
 
 
