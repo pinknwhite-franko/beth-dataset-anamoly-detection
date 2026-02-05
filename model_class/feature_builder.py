@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import numpy as np
 import hashlib
+import os
 
 class FeatureBuilder:
     def __init__(self):
@@ -48,7 +49,7 @@ class FeatureBuilder:
         '''
         return int(ns == 4026531840)
 
-    def _generate_parent_process_table(self, df) -> None:
+    def _generate_parent_process_table(self, df) -> pd.DataFrame:
         parent_process_lookup = df[["hostName", "processId", "processName", "userId","timestamp"]].drop_duplicates()
         parent_process_lookup = parent_process_lookup.rename(
             columns={
@@ -63,11 +64,13 @@ class FeatureBuilder:
             parent_process_lookup,
             left_on="timestamp",
             right_on="parent_timestamp",
-            by=["hostName", "parentProcessId"],
+            by=["hostName","parentProcessId"],
             direction="backward",        # parent time <= child time
             allow_exact_matches=False    # enforce strictly earlier
         )
-        self.parent_process_table = df[["parentProcessId", "parentProcessName", "parentUserId"]].drop_duplicates()
+        return df
+        # df = df.dropna(subset=['parentProcessName', 'parentUserId'], how='all')
+        # self.parent_process_table = df[["processName","parentProcessId", "parentProcessName", "parentUserId"]].drop_duplicates()
     
     def _hash(self, feature_name) -> int:
         # Generate hash, convert to int, then modulo to range (e.g., 1000)
@@ -96,13 +99,11 @@ class FeatureBuilder:
         df = X.copy()
 
         # Hash high cardinality categorical features
-        df = self._hash_features(df, ['processName'])
+        # df = self._hash_features(df, ['processName'])
         
         # Compute frequency encoding maps on training data
         self._compute_frequency_encoding(df)
-
-        # Generate parent process table for later merging
-        self._generate_parent_process_table(df)
+        # print(self.col_freq_maps)
 
         return self
     
@@ -113,16 +114,26 @@ class FeatureBuilder:
 
         df = X.copy()
 
+        print(len(df), "rows before feature engineering")
+        # df.to_csv("./observe0.csv") # delete
+
         # What: Frequency encoding for multiple columns
         # Why: capture commonality within each host
         for col, freq_map in self.col_freq_maps.items():
             df = df.merge(freq_map, on=['hostName', col], how='left')
             df[f"{col}_freq"] = df[f"{col}_freq"].fillna(0).astype(int)
 
+        print(len(df), "rows after frequency encoding")
+        # df.to_csv("./observe1.csv") # DELETE
+
         # What: identify parent process info based on hostName and parentProcessId
         # Why: get parent process information to expand information on child parent process relationship
-        df = df.merge(self.parent_process_table, on=['parentProcessId'], how='left')
-        print(df.columns)
+        # Generate parent process table for merging in transform
+        df = self._generate_parent_process_table(df)
+        df.to_csv("./observe_after_merging_parent_info.csv") # DELETE
+        # df = df.merge(self.parent_process_table, on=['parentProcessId'], how='left').drop_duplicates()
+
+        print(len(df), "rows after merging parent process info")
 
         # What: parentProcessId and as processId mapping to a binary variable should suffice.
         # suggested by research paper
@@ -141,10 +152,13 @@ class FeatureBuilder:
         # Why: Distinguish between system/OS users and regular users, as system activities often
         df["userId_binary"]  = df["userId"].apply(lambda x: 1 if x < 1000 else 0)
         df["parentUserId_binary"]  = df["parentUserId"].apply(lambda x: 1 if x < 1000 else 0)
+        # df.to_csv("./observe.csv") # DELETE
 
         # What: Did the parent fork and re-exec itself or spawn a different binary?
         # why: Malicious activity may involve a process spawning a different binary than itself.
         df["same_process_name_as_parent"] = np.where(df["parentProcessName"].notnull(),(df["processName"] == df["parentProcessName"]).astype(int), None)
+
+        print(len(df), "rows after processing parent and child process info and relationship")
 
         # What: calculate the length of a stackAddresses
         # Why: get information on how much memory does a call use. 
@@ -159,6 +173,8 @@ class FeatureBuilder:
         # Why: For normal function call, the stackAddresses should be highly diverse (ASLR). malicious or abnormal behavior, it often manipulates and uses stack addresses.
         df['stackAddresses_unique_ratio'] = df['stackAddresses'].apply(lambda x: self._stack_diversity(x))
 
+        print(len(df), "rows after processing stackAddresses info")
+
         # What: check if the program exit with an error
         # Why: error return value might indicates the function call could have been altered by a attacker.
         df["returnValue_is_error"] = (df["returnValue"] == -1).astype(int)
@@ -169,6 +185,8 @@ class FeatureBuilder:
         df['args_has_path'] = df['args'].apply(lambda x: int(any('pathname' in d['name'] for d in x)))
         # df[['args_has_path', 'args']].head(10)
 
+        print(len(df), "rows after processing arg info")
+
         # What: mount namespace binary encoding
         # Why: Distinguish between default and custom mount namespaces. all logs with userId ≥1000
         # had a mountNamespace of 4026531840, while some OS
@@ -177,17 +195,15 @@ class FeatureBuilder:
 
         # What hash processName, hostName, parentProcessName
         # Why: convert high cardinality categorical features into numeric features
-        hash_lookup = self.hash_feature_lookup['processName']
-        df["processName_hash"] = df["processName"].astype(str).apply(self.hash)
-        df["parentProcessName_hash"] = df["parentProcessName"].astype(str).fillna("").apply(self.hash)
+        # hash_lookup = self.hash_feature_lookup['processName']
+        # df["processName_hash"] = df["processName"].astype(str).apply(self.hash)
+        # df["parentProcessName_hash"] = df["parentProcessName"].astype(str).fillna("").apply(self.hash)
         # df["hostName_hash"] = df["hostName"].astype(str).apply(self.hash)
         # hash_lookup = self.hash_feature_lookup['hostName']
         # df['hostName_hash'] = df['hostName'].map(dict(zip(hash_lookup['hostName'], hash_lookup['hostName_hash'])))
 
         df = df[[
             'eventId',
-            'processName_hash',
-            'parentProcessName_hash',
             'processId_freq', 
             'threadId_freq', 
             'parentProcessId_freq',
