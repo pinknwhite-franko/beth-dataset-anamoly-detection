@@ -146,7 +146,7 @@ class FeatureBuilder:
 
         # What: Did the child process run under the same user as its parent?
         # Why: Malicious processes may run under different user accounts than their parent processes.
-        df["same_user_as_parent"] = np.where(df["parentUserId"].notnull(),(df["userId"] == df["parentUserId"]).astype(int), -1)
+        df["same_user_as_parent"] = np.where(df["parentUserId"].notnull(),(df["userId"] == df["parentUserId"]).astype(int), None)
 
         # What: Binary encoding of userId based on whether it is below 1000 or not.
         # Why: Distinguish between system/OS users and regular users, as system activities often
@@ -172,6 +172,8 @@ class FeatureBuilder:
         # What: Calculate the percentage of stack addresses that are different in a given stack trace
         # Why: For normal function call, the stackAddresses should be highly diverse (ASLR). malicious or abnormal behavior, it often manipulates and uses stack addresses.
         df['stackAddresses_unique_ratio'] = df['stackAddresses'].apply(lambda x: self._stack_diversity(x))
+
+        df.to_csv("after_stackAddresses_data.csv")
 
         print(len(df), "rows after processing stackAddresses info")
 
