@@ -135,6 +135,26 @@ class FeatureBuilder:
 
         print(len(df), "rows after merging parent process info")
 
+        # TODO: Find Build the lineage trace for each process to get more comprehensive parent-child relationship information.
+        # the lineage trace can be built based on parentProcessId and processId mapping, and the event sequence can be reconstructed based on timestamp.
+        # we then have to normalize the trace replacing specific arguments(noise) with placeholders to get a more general trace pattern(signal).
+        '''
+        Then a full trace document becomes:
+        access|pathname=/etc/ld.so.cache
+        openat|pathname=/etc/ld.so.cache
+        stat|pathname=/usr/bin/run-parts
+        clone
+        -> 
+        execve|pathname=/usr/bin/run-parts|argv=run-parts_--report_/etc/cron.hourly
+        openat|pathname=/etc/cron.hourly
+        read
+        '''
+
+        # TODO: then we feed the trace into TF-IDF or a transformer model to get a trace embedding, which can be used as a feature for anomaly detection.
+        '''
+        TF-IDF has to be built based on the training data to get the term frequency and inverse document frequency, and then we can transform the trace into a TF-IDF vector.
+        '''
+
         # What: parentProcessId and as processId mapping to a binary variable should suffice.
         # suggested by research paper
         df['is_parent_system_process'] = df['parentProcessId'].isin([0, 1, 2]).astype(int)
@@ -195,6 +215,7 @@ class FeatureBuilder:
         # userId traffic used different mountNamespace values.
         df['mountNamespace_binary'] = df['mountNamespace'].apply(self._mount_ns_binary)
 
+        # OPTIONAL: based on testing, these features don't seem to help with the model performance. 
         # What hash processName, hostName, parentProcessName
         # Why: convert high cardinality categorical features into numeric features
         # hash_lookup = self.hash_feature_lookup['processName']
