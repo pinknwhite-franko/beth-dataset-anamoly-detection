@@ -1,0 +1,2 @@
+After pulling down the repo, make sure you add the labelled_testing_data.csv, labelled_training_data.csv, and the labelled_validation_data.csv 
+files from here: https://www.kaggle.com/datasets/katehighnam/beth-dataset?resource=download
