@@ -21,7 +21,7 @@ class FeatureBuilder:
         return len(set(stack)) / max(len(stack), 1)
 
     
-    def _stack_jump_std(self, stack) -> float:
+    def _stack_jump_std_mean_max(self, stack) -> float:
         '''
         calculate the standard deviation of the differences between consecutive stack addresses
         to measure the continuity of the stack trace. 
@@ -31,8 +31,32 @@ class FeatureBuilder:
         if len(stack) < 2:
             return 0
         diffs = [abs(stack[i] - stack[i+1]) for i in range(len(stack)-1)]
-        return np.std(diffs)
+        return np.std(diffs), np.mean(diffs), np.max(diffs)
+
+    # def _stack_jump_mean(self, stack) -> float:
+    #     '''
+    #     calculate the mean of the differences between consecutive stack addresses
+    #     to measure the continuity of the stack trace. 
+        
+    #     :param stack: a trace of stack addresses
+    #     '''
+    #     if len(stack) < 2:
+    #         return 0
+    #     diffs = [abs(stack[i] - stack[i+1]) for i in range(len(stack)-1)]
+    #     return np.mean(diffs)
     
+    # def _stack_jump_max(self, stack) -> float:
+    #     '''
+    #     calculate the mean of the differences between consecutive stack addresses
+    #     to measure the continuity of the stack trace. 
+        
+    #     :param stack: a trace of stack addresses
+    #     '''
+    #     if len(stack) < 2:
+    #         return 0
+    #     diffs = [abs(stack[i] - stack[i+1]) for i in range(len(stack)-1)]
+    #     return np.max(diffs)
+
     def _argument_parse(self, args_str) -> list:
         '''
         check if a string representation of a list can be safely evaluated to a Python object.
@@ -142,13 +166,13 @@ class FeatureBuilder:
         df = self._compute_frequency_encoding_time_based(df)
 
         print(len(df), "rows after frequency encoding")
-        df.to_csv("./staging_dataframe/observe_after_freq_encoding.csv") # DELETE
+        # df.to_csv("./staging_dataframe/observe_after_freq_encoding.csv") # DELETE
 
         # What: identify parent process info based on hostName and parentProcessId
         # Why: get parent process information to expand information on child parent process relationship
         # Generate parent process table for merging in transform
         df = self._generate_parent_process_table(df)
-        df.to_csv("./staging_dataframe/observe_after_merging_parent_info.csv") # DELETE
+        # df.to_csv("./staging_dataframe/observe_after_merging_parent_info.csv") # DELETE
         # df = df.merge(self.parent_process_table, on=['parentProcessId'], how='left').drop_duplicates()
 
         print(len(df), "rows after merging parent process info")
@@ -205,13 +229,13 @@ class FeatureBuilder:
 
         # What: calculate the standard deviation of the differences between consecutive stack addresses
         # Why: normal stacks are often continuous, while abnormal stacks may have large jumps.
-        df['stackAddresses_jump_std'] = df['stackAddresses'].apply(self._stack_jump_std)
+        df[['stackAddresses_jump_std', 'stackAddresses_jump_mean', 'stackAddresses_jump_max']] = df['stackAddresses'].apply(self._stack_jump_std_mean_max).apply(pd.Series)
 
         # What: Calculate the percentage of stack addresses that are different in a given stack trace
-        # Why: For normal function call, the stackAddresses should be highly diverse (ASLR). malicious or abnormal behavior, it often manipulates and uses stack addresses.
+        # Why: Measures how repetitive the addresses are within a stack trace. lower values may indicate repeated frames or looping-like patterns.
         df['stackAddresses_unique_ratio'] = df['stackAddresses'].apply(lambda x: self._stack_diversity(x))
 
-        df.to_csv("./staging_dataframe/after_stackAddresses_data.csv")
+        # df.to_csv("./staging_dataframe/after_stackAddresses_data.csv") # DELETE
 
         print(len(df), "rows after processing stackAddresses info")
 
@@ -259,6 +283,8 @@ class FeatureBuilder:
             'same_process_name_as_parent',
             'stackAddresses_len', 
             'stackAddresses_jump_std',
+            'stackAddresses_jump_mean',
+            'stackAddresses_jump_max',
             'stackAddresses_unique_ratio', 
             'returnValue',
             'returnValue_is_error', 
