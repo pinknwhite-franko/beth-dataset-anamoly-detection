@@ -83,14 +83,31 @@ class FeatureBuilder:
             self.hash_feature_lookup[col] = df[[col, f"{col}_hash"]].drop_duplicates().to_dict(orient='list')
         return df
     
-    def _compute_frequency_encoding(self, df: pd.DataFrame) -> None:
-        host_idx = df["hostName"]
+    # def _compute_frequency_encoding(self, df: pd.DataFrame) -> None:
+    #     host_idx = df["hostName"]
+    #     for col in ['processId','threadId','parentProcessId','userId','mountNamespace','eventId']:
+    #         key = pd.MultiIndex.from_arrays([host_idx, df[col]])
+    #         freq = key.value_counts()
+    #         df[f"{col}_freq"] = key.map(freq).astype(int)
+    #         df[f"{col}_freq"] = np.log1p(df[f"{col}_freq"])
+    #         self.col_freq_maps[col] = df[["hostName", col, f"{col}_freq"]].drop_duplicates()
+
+    def _compute_frequency_encoding_time_based(self, df: pd.DataFrame) -> None:
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        # number of prior rows overall
+        prior_total = np.arange(len(df))
         for col in ['processId','threadId','parentProcessId','userId','mountNamespace','eventId']:
-            key = pd.MultiIndex.from_arrays([host_idx, df[col]])
-            freq = key.value_counts()
-            df[f"{col}_freq"] = key.map(freq).astype(int)
-            df[f"{col}_freq"] = np.log1p(df[f"{col}_freq"])
-            self.col_freq_maps[col] = df[["hostName", col, f"{col}_freq"]].drop_duplicates()
+            # number of prior occurrences of this category
+            prior_count = df.groupby(col).cumcount()
+
+            # expanding past-only frequency
+            df[f"{col}_past_freq"] = np.where(
+                prior_total > 0,
+                prior_count / prior_total,
+                0.0
+            )
+        
+        return df
     
     # ===========================
     # FIT
@@ -102,7 +119,7 @@ class FeatureBuilder:
         # df = self._hash_features(df, ['processName'])
         
         # Compute frequency encoding maps on training data
-        self._compute_frequency_encoding(df)
+        # self._compute_frequency_encoding_time_based(df)
         # print(self.col_freq_maps)
 
         return self
@@ -115,22 +132,23 @@ class FeatureBuilder:
         df = X.copy()
 
         print(len(df), "rows before feature engineering")
-        # df.to_csv("./observe0.csv") # delete
+        # df.to_csv("./staging_dataframe/observe0.csv") # delete
 
         # What: Frequency encoding for multiple columns
         # Why: capture commonality within each host
-        for col, freq_map in self.col_freq_maps.items():
-            df = df.merge(freq_map, on=['hostName', col], how='left')
-            df[f"{col}_freq"] = df[f"{col}_freq"].fillna(0).astype(int)
+        # for col, freq_map in self.col_freq_maps.items():
+        #     df = df.merge(freq_map, on=['hostName', col], how='left')
+        #     df[f"{col}_freq"] = df[f"{col}_freq"].fillna(0).astype(int)
+        df = self._compute_frequency_encoding_time_based(df)
 
         print(len(df), "rows after frequency encoding")
-        # df.to_csv("./observe1.csv") # DELETE
+        df.to_csv("./staging_dataframe/observe_after_freq_encoding.csv") # DELETE
 
         # What: identify parent process info based on hostName and parentProcessId
         # Why: get parent process information to expand information on child parent process relationship
         # Generate parent process table for merging in transform
         df = self._generate_parent_process_table(df)
-        df.to_csv("./observe_after_merging_parent_info.csv") # DELETE
+        df.to_csv("./staging_dataframe/observe_after_merging_parent_info.csv") # DELETE
         # df = df.merge(self.parent_process_table, on=['parentProcessId'], how='left').drop_duplicates()
 
         print(len(df), "rows after merging parent process info")
@@ -172,7 +190,7 @@ class FeatureBuilder:
         # Why: Distinguish between system/OS users and regular users, as system activities often
         df["userId_binary"]  = df["userId"].apply(lambda x: 1 if x < 1000 else 0)
         df["parentUserId_binary"]  = df["parentUserId"].apply(lambda x: 1 if x < 1000 else 0)
-        # df.to_csv("./observe.csv") # DELETE
+        # df.to_csv("./staging_dataframe/observe.csv") # DELETE
 
         # What: Did the parent fork and re-exec itself or spawn a different binary?
         # why: Malicious activity may involve a process spawning a different binary than itself.
@@ -193,7 +211,7 @@ class FeatureBuilder:
         # Why: For normal function call, the stackAddresses should be highly diverse (ASLR). malicious or abnormal behavior, it often manipulates and uses stack addresses.
         df['stackAddresses_unique_ratio'] = df['stackAddresses'].apply(lambda x: self._stack_diversity(x))
 
-        df.to_csv("after_stackAddresses_data.csv")
+        df.to_csv("./staging_dataframe/after_stackAddresses_data.csv")
 
         print(len(df), "rows after processing stackAddresses info")
 
@@ -227,12 +245,12 @@ class FeatureBuilder:
 
         df = df[[
             'eventId',
-            'processId_freq', 
-            'threadId_freq', 
-            'parentProcessId_freq',
-            'userId_freq', 
-            'mountNamespace_freq', 
-            'eventId_freq', 
+            'processId_past_freq', 
+            'threadId_past_freq', 
+            'parentProcessId_past_freq',
+            'userId_past_freq', 
+            'mountNamespace_past_freq', 
+            'eventId_past_freq', 
             'is_system_process',
             'is_parent_system_process',
             'userId_binary',

@@ -10,7 +10,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 class FeatureBuilderTransformer(BaseEstimator, TransformerMixin):
     """
-    sklearn-compatible wrapper around your existing FeatureBuilder.
+    sklearn wrapper around existing FeatureBuilder.
 
     FeatureBuilder has:
       - fit(df, y=None) -> self
@@ -28,14 +28,14 @@ class FeatureBuilderTransformer(BaseEstimator, TransformerMixin):
 
     def transform(self, X: pd.DataFrame):
         df = self.feature_builder.transform(X)
-        # Return DataFrame (some estimators accept it; most sklearn will handle fine)
+        # Return DataFrame or numpy
         if isinstance(df, pd.DataFrame):
             self.feature_names = list(df.columns)
         if self.return_numpy:
             return df.to_numpy(dtype=float)
         return df
 
-    # Optional: helps with inspection + some sklearn utilities
+    # helps with debugging and pipelines
     def get_feature_names_out(self, input_features=None):
         if hasattr(self, "feature_names"):
             return np.array(self.feature_names, dtype=object)
