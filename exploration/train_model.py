@@ -1,7 +1,7 @@
 import os
 import sys
 
-sys.path.append('Users/cheesecake/Github/beth-dataset-anamoly-detection/model_class')
+# sys.path.append('Users/cheesecake/Github/beth-dataset-anamoly-detection/model_class')
 
 from sklearn.pipeline import Pipeline
 from model_class.feature_builder import FeatureBuilder
@@ -41,15 +41,28 @@ X_validation = df_validation.drop(columns=['sus', 'evil'])
 build_features = FeatureBuilder()
 FeatureBuilder.fit(build_features, X_train)
 
-# df_train = FeatureBuilder.transform(build_features, X_train)
+df_train = FeatureBuilder.transform(build_features, X_train)
+
+# df_train[["stackAddresses_jump_std", "stackAddresses_jump_mean", "stackAddresses_jump_max","stackAddresses_len"]]
+
+for col in ["stackAddresses_len"]:
+    # plot the distribution of stackAddresses_jump_std for normal and abnormal samples
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 3, 1)
+    plt.hist(df_train[[col]], bins=50, alpha=0.5, label='Normal')
+    plt.title(f'Distribution of {col}')
+    plt.xlabel(col)
+    plt.ylabel('Frequency')
+    plt.legend()
+    plt.show()
 
 # df_train
 
 # df_train["evil"] = y_train.values
-df_test = FeatureBuilder.transform(build_features, X_test)
-df_test["evil"] = y_test.values
-df_validation = FeatureBuilder.transform(build_features, X_validation)
-df_validation["evil"] = y_validation.values
+# df_test = FeatureBuilder.transform(build_features, X_test)
+# df_test["evil"] = y_test.values
+# df_validation = FeatureBuilder.transform(build_features, X_validation)
+# df_validation["evil"] = y_validation.values
 # df_validation.to_csv(f"{current_directory}/datasets/processed/feature_engineered_validation_data.csv", index=False)
 
 # print("df_train: ==============================")

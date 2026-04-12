@@ -33,30 +33,6 @@ class FeatureBuilder:
         diffs = [abs(stack[i] - stack[i+1]) for i in range(len(stack)-1)]
         return np.std(diffs), np.mean(diffs), np.max(diffs)
 
-    # def _stack_jump_mean(self, stack) -> float:
-    #     '''
-    #     calculate the mean of the differences between consecutive stack addresses
-    #     to measure the continuity of the stack trace. 
-        
-    #     :param stack: a trace of stack addresses
-    #     '''
-    #     if len(stack) < 2:
-    #         return 0
-    #     diffs = [abs(stack[i] - stack[i+1]) for i in range(len(stack)-1)]
-    #     return np.mean(diffs)
-    
-    # def _stack_jump_max(self, stack) -> float:
-    #     '''
-    #     calculate the mean of the differences between consecutive stack addresses
-    #     to measure the continuity of the stack trace. 
-        
-    #     :param stack: a trace of stack addresses
-    #     '''
-    #     if len(stack) < 2:
-    #         return 0
-    #     diffs = [abs(stack[i] - stack[i+1]) for i in range(len(stack)-1)]
-    #     return np.max(diffs)
-
     def _argument_parse(self, args_str) -> list:
         '''
         check if a string representation of a list can be safely evaluated to a Python object.
@@ -81,8 +57,8 @@ class FeatureBuilder:
                     "processName": "parentProcessName", 
                     "userId": "parentUserId",
                     "timestamp": "parent_timestamp",
-                    }).sort_values(["parent_timestamp","hostName", "parentProcessId"]) 
-        df = df.sort_values(["timestamp", "hostName", "parentProcessId"])
+                    }).sort_values(["parent_timestamp","hostName", "parentProcessId"]) # the sorting order is important for the merge_asof to work correctly
+        df = df.sort_values(["timestamp", "hostName", "parentProcessId"]) # the sorting order is important for the merge_asof to work correctly
         df = pd.merge_asof(
             df,
             parent_process_lookup,
@@ -116,21 +92,29 @@ class FeatureBuilder:
     #         df[f"{col}_freq"] = np.log1p(df[f"{col}_freq"])
     #         self.col_freq_maps[col] = df[["hostName", col, f"{col}_freq"]].drop_duplicates()
 
-    def _compute_frequency_encoding_time_based(self, df: pd.DataFrame) -> None:
-        df = df.sort_values("timestamp").reset_index(drop=True)
-        # number of prior rows overall
-        prior_total = np.arange(len(df))
-        for col in ['processId','threadId','parentProcessId','userId','mountNamespace','eventId']:
-            # number of prior occurrences of this category
-            prior_count = df.groupby(col).cumcount()
+    def _compute_frequency_encoding_time_based(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.sort_values(["hostName", "timestamp"]).reset_index(drop=True).copy()
 
-            # expanding past-only frequency
+        host_prior_total = df.groupby("hostName").cumcount()
+
+        # Calculate the event_id account given processid per host)
+        host_prior_count = df.groupby(["hostName", "processId", "eventId"]).cumcount()
+        df[f"processId_eventId_past_freq"] = np.where(
+            host_prior_total > 0,
+            host_prior_count / host_prior_total,
+            0.0
+        )
+
+        # Calculate the frequency for each column per host)
+        for col in ["processId", "threadId", "parentProcessId", "userId", "mountNamespace","eventId"]:
+            host_prior_count = df.groupby(["hostName", col]).cumcount()
+
             df[f"{col}_past_freq"] = np.where(
-                prior_total > 0,
-                prior_count / prior_total,
+                host_prior_total > 0,
+                host_prior_count / host_prior_total,
                 0.0
             )
-        
+
         return df
     
     # ===========================
@@ -230,6 +214,8 @@ class FeatureBuilder:
         # What: calculate the standard deviation of the differences between consecutive stack addresses
         # Why: normal stacks are often continuous, while abnormal stacks may have large jumps.
         df[['stackAddresses_jump_std', 'stackAddresses_jump_mean', 'stackAddresses_jump_max']] = df['stackAddresses'].apply(self._stack_jump_std_mean_max).apply(pd.Series)
+        for col in ["stackAddresses_jump_std", "stackAddresses_jump_mean", "stackAddresses_jump_max","stackAddresses_len"]:
+            df[col + "_log"] = np.log1p(df[col])
 
         # What: Calculate the percentage of stack addresses that are different in a given stack trace
         # Why: Measures how repetitive the addresses are within a stack trace. lower values may indicate repeated frames or looping-like patterns.
@@ -263,12 +249,13 @@ class FeatureBuilder:
         # hash_lookup = self.hash_feature_lookup['processName']
         # df["processName_hash"] = df["processName"].astype(str).apply(self.hash)
         # df["parentProcessName_hash"] = df["parentProcessName"].astype(str).fillna("").apply(self.hash)
-        # df["hostName_hash"] = df["hostName"].astype(str).apply(self.hash)
+        df["hostName_hash"] = df["hostName"].astype(str).apply(self._hash)
         # hash_lookup = self.hash_feature_lookup['hostName']
         # df['hostName_hash'] = df['hostName'].map(dict(zip(hash_lookup['hostName'], hash_lookup['hostName_hash'])))
 
         df = df[[
-            'eventId',
+            'hostName_hash',
+            'processId_eventId_past_freq',
             'processId_past_freq', 
             'threadId_past_freq', 
             'parentProcessId_past_freq',
@@ -281,16 +268,17 @@ class FeatureBuilder:
             'parentUserId_binary',
             'same_user_as_parent',
             'same_process_name_as_parent',
-            'stackAddresses_len', 
-            'stackAddresses_jump_std',
-            'stackAddresses_jump_mean',
-            'stackAddresses_jump_max',
+            'stackAddresses_len_log', 
+            'stackAddresses_jump_std_log',
+            'stackAddresses_jump_mean_log',
+            'stackAddresses_jump_max_log',
             'stackAddresses_unique_ratio', 
             'returnValue',
             'returnValue_is_error', 
             'argsNum',
             'args_has_path',
-            'mountNamespace_binary']]
+            'mountNamespace_binary',
+            ]]
         return df
     
 
