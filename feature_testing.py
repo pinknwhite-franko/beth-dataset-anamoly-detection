@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 
+from joblib import Parallel, delayed
 from sklearn.preprocessing import RobustScaler
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import roc_auc_score
@@ -52,27 +53,33 @@ def safe_roc_auc(y_true, scores):
     return roc_auc_score(y, scores)
 
 
-def permutation_importance(X_train, X_val, X_test, y_test, contamination=0.01, random_state=0):
+def permutation_importance(X_train, X_val, X_test, y_test, contamination=0.01, random_state=0, n_jobs=-1):
     """Compute permutation feature importance measured as drop in test ROC AUC."""
     X_fit = pd.concat([X_train, X_val], axis=0)
 
-    clf = IsolationForest(contamination=contamination, random_state=random_state)
-    clf.fit(X_fit)
-    baseline_auc = safe_roc_auc(y_test, -clf.decision_function(X_test))
+    clf = IsolationForest(contamination=contamination, random_state=random_state, n_jobs=n_jobs)
+    clf.fit(X_fit.values)
+    baseline_auc = safe_roc_auc(y_test, -clf.decision_function(X_test.values))
 
+    # Convert to numpy once to avoid N full DataFrame copies in the loop
+    X_arr = X_test.values.astype(float)
+    columns = list(X_test.columns)
     rng = np.random.RandomState(random_state)
-    rows = []
-    for col in X_test.columns:
-        Xp = X_test.copy()
-        Xp[col] = rng.permutation(Xp[col].values)
+    # Pre-generate permutations to keep determinism regardless of execution order
+    permutations = [rng.permutation(X_arr[:, i]) for i in range(len(columns))]
+
+    def _score_col(i):
+        Xp = X_arr.copy()
+        Xp[:, i] = permutations[i]
         auc = safe_roc_auc(y_test, -clf.decision_function(Xp))
         drop = (baseline_auc - auc) if not (np.isnan(baseline_auc) or np.isnan(auc)) else np.nan
-        rows.append({"feature": col, "baseline_auc": baseline_auc, "permuted_auc": auc, "auc_drop": drop})
+        return {"feature": columns[i], "baseline_auc": baseline_auc, "permuted_auc": auc, "auc_drop": drop}
 
+    rows = Parallel(n_jobs=n_jobs, prefer="threads")(delayed(_score_col)(i) for i in range(len(columns)))
     return pd.DataFrame(rows).sort_values("auc_drop", ascending=False).reset_index(drop=True)
 
 
-def retrain_and_evaluate(X_train, X_val, X_test, y_train, y_test, imp_df, k_list, n_estimators=200, random_state=42):
+def retrain_and_evaluate(X_train, X_val, X_test, y_train, y_test, imp_df, k_list, n_estimators=200, random_state=42, n_jobs=-1):
     """Retrain IsolationForest on train+val and evaluate test AUC for each feature subset in k_list."""
     X_fit = pd.concat([X_train, X_val], axis=0)
     all_features = list(X_train.columns)
@@ -83,17 +90,16 @@ def retrain_and_evaluate(X_train, X_val, X_test, y_train, y_test, imp_df, k_list
         scaler = RobustScaler()
         Xf_s = scaler.fit_transform(X_fit[features].values)
         Xt_s = scaler.transform(X_test[features].values)
-        clf = IsolationForest(n_estimators=n_estimators, contamination=contamination, random_state=random_state)
+        clf = IsolationForest(n_estimators=n_estimators, contamination=contamination, random_state=random_state, n_jobs=n_jobs)
         clf.fit(Xf_s)
         auc = safe_roc_auc(y_test, -clf.decision_function(Xt_s))
         return {"scenario": scenario, "n_features": len(features), "features": ",".join(features), "auc": auc}
 
-    results = [fit_eval(all_features, "baseline_all")]
-    for k in sorted(set(k_list)):
-        k = min(int(k), len(imp_sorted))
-        features = imp_sorted["feature"].iloc[:k].tolist()
-        results.append(fit_eval(features, f"keep_top_k={k}"))
-
+    configs = [(all_features, "baseline_all")] + [
+        (imp_sorted["feature"].iloc[:min(int(k), len(imp_sorted))].tolist(), f"keep_top_k={k}")
+        for k in sorted(set(k_list))
+    ]
+    results = Parallel(n_jobs=n_jobs, prefer="threads")(delayed(fit_eval)(features, scenario) for features, scenario in configs)
     return pd.DataFrame(results)
 
 
