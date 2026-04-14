@@ -117,6 +117,23 @@ class FeatureBuilder:
 
         return df
     
+    def _computer_child_process_spawn_rate_per_parent(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.sort_values(["hostName", "timestamp"]).reset_index(drop=True).copy()
+
+        host_prior_total = df.groupby("hostName").cumcount()
+
+        # Calculate the child process spawn rate (given parentProcessId per host)
+        df["is_child_process_new"] = ~df.duplicated(subset=["hostName", "parentProcessId", "processId"]).astype(int)
+        df["child_process_spawn_count_so_far"] = df.groupby(["hostName","parentProcessId"])["is_child_process_new"].cumsum() - 1 # subtract 1 to exclude the current process itself
+        df.drop(columns=["is_child_process_new"], inplace=True)
+
+        df["child_process_spawn_rate_so_far"] = np.where(
+            host_prior_total > 0,
+            df["child_process_spawn_count_so_far"] / host_prior_total,
+            0.0
+        )
+        return df
+    
     # ===========================
     # FIT
     # ===========================
@@ -204,6 +221,9 @@ class FeatureBuilder:
         # why: Malicious activity may involve a process spawning a different binary than itself.
         df["same_process_name_as_parent"] = np.where(df["parentProcessName"].notnull(),(df["processName"] == df["parentProcessName"]).astype(int), None)
 
+        # What: calculate the child process spawn rate given parentProcessId per host
+        # Why: A parent process spawning an unusually high number of child processes may indicate malicious behavior
+        df = self._computer_child_process_spawn_rate_per_parent(df)
         print(len(df), "rows after processing parent and child process info and relationship")
 
         # What: calculate the length of a stackAddresses
@@ -264,6 +284,7 @@ class FeatureBuilder:
             'eventId_past_freq', 
             'is_system_process',
             'is_parent_system_process',
+            "child_process_spawn_rate_so_far",
             'userId_binary',
             'parentUserId_binary',
             'same_user_as_parent',
