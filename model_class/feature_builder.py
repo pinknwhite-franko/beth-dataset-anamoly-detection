@@ -117,7 +117,6 @@ class FeatureBuilder:
             'eventId_freq',
             'is_system_process',
             'is_parent_system_process',
-            "child_process_spawn_rate_so_far",
             'userId_binary',
             'parentUserId_binary',
             'same_user_as_parent',
