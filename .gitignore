@@ -1,4 +1,11 @@
+# ignore pycache and csv files
 __pycache__
 *.csv
 *.png
 retrain_results_full.txt
+
+# Ignore staging dataframes that are used for observation and debugging. These files are not part of the final dataset and are only used for intermediate analysis.
+**/staging_dataframe/*.csv  
+
+# Ignore system files that are not relevant to the project
+**/.DS_Store

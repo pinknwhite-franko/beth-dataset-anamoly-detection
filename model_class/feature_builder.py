@@ -22,8 +22,8 @@ class FeatureBuilder:
                     "processName": "parentProcessName", 
                     "userId": "parentUserId",
                     "timestamp": "parent_timestamp",
-                    }).sort_values(["parent_timestamp","hostName", "parentProcessId"]) 
-        df = df.sort_values(["timestamp", "hostName", "parentProcessId"])
+                    }).sort_values(["parent_timestamp","hostName", "parentProcessId"]) # the sorting order is important for the merge_asof to work correctly
+        df = df.sort_values(["timestamp", "hostName", "parentProcessId"]) # the sorting order is important for the merge_asof to work correctly
         df = pd.merge_asof(
             df,
             parent_process_lookup,
@@ -117,6 +117,7 @@ class FeatureBuilder:
             'eventId_freq',
             'is_system_process',
             'is_parent_system_process',
+            "child_process_spawn_rate_so_far",
             'userId_binary',
             'parentUserId_binary',
             'same_user_as_parent',
