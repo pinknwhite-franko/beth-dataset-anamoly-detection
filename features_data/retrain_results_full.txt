@@ -1,0 +1,9 @@
+Retrain results:
+     scenario  n_features                                                                                                                         features      auc
+ baseline_all          15       processId_eventId_past_freq,processId_past_freq,threadId_past_freq,userId_past_freq,userId_binary,returnValue,...(+9 more) 0.972861
+ keep_top_k=3           3                                                                  processId_eventId_past_freq,userId_past_freq,threadId_past_freq 0.979949
+ keep_top_k=5           5                                processId_eventId_past_freq,userId_past_freq,threadId_past_freq,processId_past_freq,userId_binary 0.981320
+ keep_top_k=7           7 processId_eventId_past_freq,userId_past_freq,threadId_past_freq,processId_past_freq,userId_binary,eventId_past_freq,...(+1 more) 0.975180
+keep_top_k=10          10 processId_eventId_past_freq,userId_past_freq,threadId_past_freq,processId_past_freq,userId_binary,eventId_past_freq,...(+4 more) 0.976003
+keep_top_k=11          11 processId_eventId_past_freq,userId_past_freq,threadId_past_freq,processId_past_freq,userId_binary,eventId_past_freq,...(+5 more) 0.976214
+keep_top_k=15          15 processId_eventId_past_freq,userId_past_freq,threadId_past_freq,processId_past_freq,userId_binary,eventId_past_freq,...(+9 more) 0.972693
