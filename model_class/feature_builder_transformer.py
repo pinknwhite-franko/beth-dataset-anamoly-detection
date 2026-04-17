@@ -27,12 +27,24 @@ class FeatureBuilderTransformer(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X: pd.DataFrame):
-        df = self.feature_builder.transform(X)
-        # Return DataFrame or numpy
+        X_in = X.reset_index(drop=True).copy()
+        X_in["__row_id"] = np.arange(len(X_in))
+
+        df = self.feature_builder.transform(X_in)
+
         if isinstance(df, pd.DataFrame):
+            if "__row_id" in df.columns:
+                df = (
+                    df.sort_values("__row_id")
+                    .drop(columns=["__row_id"])
+                    .reset_index(drop=True)
+                )
+
             self.feature_names = list(df.columns)
+
         if self.return_numpy:
             return df.to_numpy(dtype=float)
+
         return df
 
     # helps with debugging and pipelines

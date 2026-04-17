@@ -4,6 +4,7 @@ Run: python feature_testing.py
 Outputs: features_data/permutation_importance_full.csv, features_data/retrain_results_full.csv
 """
 
+import hashlib
 import os
 import pandas as pd
 import numpy as np
@@ -12,10 +13,11 @@ from matplotlib import pyplot as plt
 from sklearn.preprocessing import RobustScaler
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
 
 from model_class.feature_builder import FeatureBuilder
 from model_class.feature_builder_transformer import FeatureBuilderTransformer
+from sklearn.model_selection import train_test_split
+
 
 OUT_DIR = os.path.join(os.getcwd(), "features_data")
 
@@ -41,15 +43,25 @@ def read_data(data_dir=None):
     return X_train, y_train, X_val, y_val, X_test, y_test
 
 
-def build_features(X_train, X_val, X_test_dev, X_test_final):
+def build_features(X_train, X_val, X_test):
     trans = FeatureBuilderTransformer(FeatureBuilder(), return_numpy=False)
-    return (
-        trans.fit_transform(X_train),
-        trans.transform(X_val),
-        trans.transform(X_test_dev),
-        trans.transform(X_test_final),
-    )
+    return trans.fit_transform(X_train), trans.transform(X_val), trans.transform(X_test)
 
+
+def stable_hash(value):
+    value = str(value)
+    return int(hashlib.sha256(value.encode("utf-8")).hexdigest(), 16) % 2_000_000_000
+
+
+def encode_string_features(X_train, X_val, X_test):
+    object_cols = X_train.select_dtypes(include=["object", "string"]).columns.tolist()
+
+    for col in object_cols:
+        X_train[col] = X_train[col].fillna("").astype(str).apply(stable_hash)
+        X_val[col] = X_val[col].fillna("").astype(str).apply(stable_hash)
+        X_test[col] = X_test[col].fillna("").astype(str).apply(stable_hash)
+
+    return X_train, X_val, X_test
 
 def safe_roc_auc(y_true, scores):
     y = np.array(y_true).astype(int)
@@ -105,23 +117,23 @@ def retrain_and_evaluate(X_train, X_val, X_test, y_train, y_test, imp_df, k_list
 
 def main():
     X_train, y_train, X_val, _y_val, X_test, y_test = read_data()
+    X_train_f, X_val_f, X_test_f = build_features(X_train, X_val, X_test)
 
-    # Split labelled test data into:
+    X_train_f, X_val_f, X_test_f = encode_string_features(
+    X_train_f,
+    X_val_f,
+    X_test_f
+    )
+
+    # Split labelled test data:
     # dev = used for feature selection
-    # final = used only for final evaluation
-    X_test_dev, X_test_final, y_test_dev, y_test_final = train_test_split(
-        X_test,
+    # final = used for final evaluation
+    X_test_dev_f, X_test_final_f, y_test_dev, y_test_final = train_test_split(
+        X_test_f,
         y_test,
         test_size=0.30,
         stratify=y_test,
         random_state=42
-    )
-
-    X_train_f, X_val_f, X_test_dev_f, X_test_final_f = build_features(
-        X_train,
-        X_val,
-        X_test_dev,
-        X_test_final
     )
 
     contamination = max(0.001, float(np.array(y_train).astype(int).mean()))
@@ -137,16 +149,17 @@ def main():
         random_state=42
     )
 
-    imp_path = os.path.join(OUT_DIR, "permutation_importance_dev.csv")
-    imp_df.to_csv(imp_path, index=False)
-    print(f"Saved: {imp_path}")
+    imp_df.to_csv(os.path.join(OUT_DIR, "permutation_importance_dev.csv"), index=False)
+    print(f"Saved: {os.path.join(OUT_DIR, 'permutation_importance_dev.csv')}")
 
     for k in (5, 10, 15):
-        best_path = os.path.join(OUT_DIR, f"best_features_dev_k{k}.csv")
-        imp_df["feature"].iloc[:k].to_frame().to_csv(best_path, index=False)
-        print(f"Saved top-{k} features: {best_path}")
+        imp_df["feature"].iloc[:k].to_frame().to_csv(
+            os.path.join(OUT_DIR, f"best_features_dev_k{k}.csv"),
+            index=False
+        )
+        print(f"Saved top-{k} features: {os.path.join(OUT_DIR, f'best_features_dev_k{k}.csv')}")
 
-    print("Retraining and evaluating on final split...")
+    print("Retraining and evaluating baseline vs reduced feature sets on final split...")
     n = len(X_train_f.columns)
     k_candidates = sorted({5, 10, 15, max(1, n // 4), max(1, n // 2), max(1, (3 * n) // 4)})
 
@@ -160,9 +173,8 @@ def main():
         k_candidates
     )
 
-    results_path = os.path.join(OUT_DIR, "retrain_results_final.csv")
-    results_df.to_csv(results_path, index=False)
-    print(f"Saved: {results_path}")
+    results_df.to_csv(os.path.join(OUT_DIR, "retrain_results_final.csv"), index=False)
+    print(f"Saved: {os.path.join(OUT_DIR, 'retrain_results_final.csv')}")
 
     def _fmt_features(s, max_show=6):
         if not isinstance(s, str) or not s:
