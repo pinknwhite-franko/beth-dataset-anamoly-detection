@@ -88,7 +88,7 @@ class FeatureBuilder:
         )
 
         # Calculate the frequency for each column per host)
-        for col in ["processId", "threadId", "parentProcessId", "userId", "mountNamespace","eventId"]:
+        for col in ["processId", "threadId", "userId", "mountNamespace","eventId","parentProcessId"]:
             host_prior_count = df.groupby(["hostName", col]).cumcount()
 
             df[f"{col}_past_freq"] = np.where(
@@ -96,6 +96,8 @@ class FeatureBuilder:
                 host_prior_count / host_prior_total,
                 0.0
             )
+        
+        # print(df.columns)
 
         return df
     
@@ -130,13 +132,6 @@ class FeatureBuilder:
         df = X.copy()
 
         print(len(df), "rows before feature engineering")
-        # df.to_csv("./staging_dataframe/observe0.csv") # delete
-
-        # What: Time-based frequency encoding for multiple columns
-        # Why: capture commonality within each host
-        df = self._compute_frequency_encoding_time_based(df)
-
-        print(len(df), "rows after frequency encoding")
 
         # What: identify parent process info based on hostName and parentProcessId
         # Why: get parent process information to expand information on child parent process relationship
@@ -145,15 +140,28 @@ class FeatureBuilder:
 
         print(len(df), "rows after merging parent process info")
 
+        # What: Time-based frequency encoding for multiple columns
+        # Why: capture commonality within each host
+        df = self._compute_frequency_encoding_time_based(df)
+
+        print(len(df), "rows after frequency encoding")
+
         # What: parentProcessId and as processId mapping to a binary variable should suffice.
         # suggested by research paper
         df['is_parent_system_process'] = df['parentProcessId'].isin([0, 1, 2]).astype(int)
         df['is_system_process'] = df['processId'].isin([0, 1, 2]).astype(int)
 
+        # What: get parent process info and append it to the dataframe
+        # Why: get parent process information to expand information on child parent process relationship
+        df["parent_missing"] = df["parentUserId"].isna().astype(int)
 
         # What: Did the child process run under the same user as its parent?
         # Why: Malicious processes may run under different user accounts than their parent processes.
         df["same_user_as_parent"] = np.where(df["parentUserId"].notnull(),(df["userId"] == df["parentUserId"]).astype(int), None)
+
+        # What: Did the parent fork and re-exec itself or spawn a different binary?
+        # why: Malicious activity may involve a process spawning a different binary than itself.
+        df["same_process_name_as_parent"] = np.where(df["parentProcessName"].notnull(),(df["processName"] == df["parentProcessName"]).astype(int), None)
 
         # What: Binary encoding of userId based on whether it is below 1000 or not.
         # Why: Distinguish between system/OS users and regular users, as system activities often
@@ -166,9 +174,6 @@ class FeatureBuilder:
         # userId traffic used different mountNamespace values.
         df['mountNamespace_binary'] = df['mountNamespace'].apply(self._mount_ns_binary)
 
-        # What: Did the parent fork and re-exec itself or spawn a different binary?
-        # why: Malicious activity may involve a process spawning a different binary than itself.
-        df["same_process_name_as_parent"] = np.where(df["parentProcessName"].notnull(),(df["processName"] == df["parentProcessName"]).astype(int), None)
 
         # What: calculate the child process spawn rate given parentProcessId per host
         # Why: A parent process spawning an unusually high number of child processes may indicate malicious behavior
@@ -187,13 +192,6 @@ class FeatureBuilder:
         df['stackAddresses_unique_ratio'] = unique_ratios
         print(len(df), "rows after processing stackAddresses info")
 
-
-        # What: Calculate the percentage of stack addresses that are different in a given stack trace
-        # Why: Measures how repetitive the addresses are within a stack trace. lower values may indicate repeated frames or looping-like patterns.
-        df['stackAddresses_unique_ratio'] = df['stackAddresses'].apply(lambda x: self._stack_diversity(x))
-
-        print(len(df), "rows after processing stackAddresses info")
-
         # What: check if the program exit with an error
         # Why: error return value might indicates the function call could have been altered by a attacker.
         df["returnValue_is_error"] = (df["returnValue"] == -1).astype(int)
@@ -205,7 +203,31 @@ class FeatureBuilder:
 
         print(len(df), "rows after processing arg info")
 
-        return df
+        return df[[
+            "processId_eventId_past_freq",
+            "processId_past_freq",
+            "threadId_past_freq",
+            "eventId_past_freq",
+            "userId_past_freq",
+            "parentProcessId_past_freq",
+            "mountNamespace_past_freq",
+            "is_parent_system_process",
+            "is_system_process",
+            "parent_missing",
+            "same_user_as_parent",
+            "same_process_name_as_parent",
+            "userId_binary",
+            "parentUserId_binary",
+            "mountNamespace_binary",
+            "child_process_spawn_rate_so_far",
+            "stackAddresses_unique_ratio",
+            "stackAddresses_len",
+            "stackAddresses_jump_std",
+            "returnValue",
+            "returnValue_is_error",
+            "args_has_path",
+            "argsNum",
+        ]]
     
 
     
