@@ -1,7 +1,6 @@
 import os
 import pandas as pd
 import numpy as np
-from matplotlib import pyplot as plt
 
 from sklearn.preprocessing import RobustScaler, FunctionTransformer
 from sklearn.ensemble import IsolationForest
@@ -11,9 +10,58 @@ from sklearn.pipeline import Pipeline
 from model_class.feature_builder_clean_v2 import FeatureBuilder
 from model_class.feature_builder_transformer import FeatureBuilderTransformer
 
+# Metric meanings for validation-only feature testing:
+#
+# features
+#   The count of features used for that run.
+#
+# objective
+#   Our combined validation score. Lower is better.
+#   It penalizes:
+#     1) high false positive rate on validation good data
+#     2) a shift in anomaly score mean between train and validation
+#     3) a difference in anomaly score spread between train and validation
+#   So the best feature set is the one with the LOWEST objective.
+#
+# predicted_outliers
+#   Number of validation rows predicted as outliers/anomalies (-1).
+#   Since validation is supposed to be good-only, these are basically
+#   "false evils" / false positives.
+#
+# predicted_inliers
+#   Number of validation rows predicted as normal/inliers (1).
+#   Since validation is good-only, these are basically "true goods."
+#
+# val_outlier_rate
+#   Fraction of validation rows flagged as outliers.
+#   This is the false positive rate on validation good data.
+#   Lower is better.
+#
+# score_shift
+#   Absolute difference between the mean anomaly score on training
+#   and the mean anomaly score on validation.
+#   Lower means validation looks more like training, which is good
+#   if both are supposed to be benign.
+#
+# score_std_gap
+#   Absolute difference between the standard deviation of anomaly scores
+#   on training vs validation.
+#   Lower means the spread/variability of scores is more similar between
+#   training and validation, which usually indicates better generalization.
+#
+# How to interpret the table overall:
+#   - Lower objective = better
+#   - Lower predicted_outliers / val_outlier_rate = fewer false evils
+#   - Lower score_shift / score_std_gap = validation behavior is closer to training
+#   - If reduced feature sets have worse objective than baseline_all,
+#     then pruning features is hurting validation performance.
 
+
+# Where output CSVs will be saved
 OUT_DIR = os.path.join(os.getcwd(), "features_data")
 
+# These groups mirror the notebook preprocessing setup.
+# We keep them grouped so feature_testing.py stays aligned with model_training.ipynb.
 FEATURE_GROUPS = {
     "count": [
         "processId_eventId_past_count",
@@ -59,10 +107,17 @@ FEATURE_GROUPS = {
     ],
 }
 
+# Flat list of every candidate feature we want to consider
 ALL_CANDIDATE_COLS = [c for cols in FEATURE_GROUPS.values() for c in cols]
 
 
 def read_data(data_dir=None):
+    """
+    Load only training and validation data.
+
+    We do NOT use labelled test data here because this script is meant
+    to evaluate feature behavior on validation only.
+    """
     if data_dir is None:
         data_dir = os.path.join(os.getcwd(), "datasets", "raw")
 
@@ -70,18 +125,32 @@ def read_data(data_dir=None):
         path = os.path.join(data_dir, name)
         if not os.path.exists(path):
             raise FileNotFoundError(path)
+
         df = pd.read_csv(path, header=0)
+
+        # Drop target / helper columns so only raw input features remain
         return df.drop(columns=[c for c in ["sus", "evil"] if c in df.columns])
 
     return _load_x("labelled_training_data.csv"), _load_x("labelled_validation_data.csv")
 
 
 def build_features(X_train, X_val):
+    """
+    Run the project's FeatureBuilder on train and validation.
+
+    This is where raw log columns become engineered features like
+    counts, rarity, first-seen flags, etc.
+    """
     trans = FeatureBuilderTransformer(FeatureBuilder(), return_numpy=False)
     return trans.fit_transform(X_train), trans.transform(X_val)
 
 
 def keep_candidate_features(X_train, X_val):
+    """
+    Keep only the feature columns that the notebook/model pipeline expects.
+
+    Also fills null / inf values so sklearn can safely use them.
+    """
     missing = [c for c in ALL_CANDIDATE_COLS if c not in X_train.columns]
     if missing:
         raise ValueError(f"Missing expected features from FeatureBuilder: {missing}")
@@ -93,6 +162,15 @@ def keep_candidate_features(X_train, X_val):
 
 
 def build_preprocessor(selected_features):
+    """
+    Build the same preprocessing logic used in model_training.ipynb.
+
+    Different feature groups get different handling:
+    - count cols: log + robust scale
+    - rarity cols: robust scale
+    - first_seen/binary/pass: passthrough
+    - scale_other: robust scale
+    """
     selected = {
         group: [c for c in cols if c in selected_features]
         for group, cols in FEATURE_GROUPS.items()
@@ -131,6 +209,16 @@ def build_preprocessor(selected_features):
 
 
 def validation_metrics(model, X_train, X_val):
+    """
+    Measure how the model behaves on good-only validation data.
+
+    Since validation is all benign:
+    - predicted_outliers = false evils
+    - predicted_inliers = true goods
+
+    We also compare train/validation score distributions to see whether
+    validation looks similar to training. Lower objective is better.
+    """
     train_scores = -model.score_samples(X_train)
     val_scores = -model.score_samples(X_val)
 
@@ -141,6 +229,9 @@ def validation_metrics(model, X_train, X_val):
 
     score_shift = float(abs(train_scores.mean() - val_scores.mean()))
     score_std_gap = float(abs(train_scores.std() - val_scores.std()))
+
+    # Combined validation objective:
+    # lower false positives + smaller train/val score mismatch is better
     objective = val_outlier_rate + 0.5 * score_shift + 0.25 * score_std_gap
 
     return {
@@ -154,6 +245,10 @@ def validation_metrics(model, X_train, X_val):
 
 
 def fit_iforest_on_features(X_train, selected_features, random_state=2000):
+    """
+    Build the full preprocessing + Isolation Forest pipeline
+    and fit it on training data only.
+    """
     model = Pipeline([
         ("scaler", build_preprocessor(selected_features)),
         ("iforest", IsolationForest(
@@ -168,6 +263,19 @@ def fit_iforest_on_features(X_train, selected_features, random_state=2000):
 
 
 def permutation_importance_validation(X_train, X_val, selected_features, random_state=42):
+    """
+    Rank individual features by how much they matter on validation.
+
+    Steps:
+    1. Fit one model on training data using all selected features
+    2. Measure baseline validation behavior
+    3. For each feature:
+       - shuffle just that column in validation
+       - re-score validation
+       - see how much the validation objective gets worse
+
+    Bigger objective increase = more important feature
+    """
     model = fit_iforest_on_features(X_train, selected_features, random_state=2000)
     baseline = validation_metrics(model, X_train[selected_features], X_val[selected_features])
 
@@ -177,6 +285,7 @@ def permutation_importance_validation(X_train, X_val, selected_features, random_
     for col in selected_features:
         Xp = X_val[selected_features].copy()
         Xp[col] = rng.permutation(Xp[col].values)
+
         perm = validation_metrics(model, X_train[selected_features], Xp)
 
         rows.append({
@@ -196,6 +305,17 @@ def permutation_importance_validation(X_train, X_val, selected_features, random_
 
 
 def evaluate_feature_subsets_on_validation(X_train, X_val, imp_df, k_list, random_state=2000):
+    """
+    Compare feature subsets on validation.
+
+    Steps:
+    1. Start with the full baseline feature set
+    2. Use permutation importance ranking to define top-k subsets
+    3. Train a model on each subset
+    4. Compare validation false evils / true goods / objective
+
+    Lower objective = better
+    """
     imp_sorted = imp_df.sort_values("objective_increase", ascending=False).reset_index(drop=True)
 
     def fit_eval(features, scenario):
@@ -209,6 +329,7 @@ def evaluate_feature_subsets_on_validation(X_train, X_val, imp_df, k_list, rando
         }
 
     results = [fit_eval(ALL_CANDIDATE_COLS, "baseline_all")]
+
     for k in sorted(set(k_list)):
         features = imp_sorted["feature"].iloc[:min(int(k), len(imp_sorted))].tolist()
         results.append(fit_eval(features, f"keep_top_k={k}"))
@@ -217,6 +338,17 @@ def evaluate_feature_subsets_on_validation(X_train, X_val, imp_df, k_list, rando
 
 
 def main():
+    """
+    Step-by-step flow:
+
+    1. Load training and validation inputs only
+    2. Build engineered features for both datasets
+    3. Keep only the feature columns aligned with the notebook
+    4. Rank individual feature importance using validation-only permutation tests
+    5. Save top 5 / 10 / 15 features
+    6. Compare baseline vs reduced feature subsets on validation
+    7. Print and save the final validation selection results
+    """
     X_train, X_val = read_data()
 
     print("Building features on train/validation...")
@@ -236,6 +368,7 @@ def main():
     )
     imp_df.to_csv(os.path.join(OUT_DIR, "permutation_importance_validation.csv"), index=False)
 
+    # Save top-k feature lists so the notebook can optionally use them later
     for k in (5, 10, 15):
         imp_df["feature"].iloc[:k].to_frame().to_csv(
             os.path.join(OUT_DIR, f"best_features_val_k{k}.csv"),
