@@ -21,18 +21,22 @@ class FeatureBuilderTransformer(BaseEstimator, TransformerMixin):
         self.return_numpy = return_numpy
         self.feature_names = None
 
-    def fit(self, X: pd.DataFrame):
-        # Fit only on training data
-        self.feature_builder.fit(X)
+    def fit(self, X: pd.DataFrame, y: pd.DataFrame = None):
+        if y:
+            # Fit only on training data
+            self.feature_builder.fit(X, y)
+        else:
+            self.feature_builder.fit(X)
         return self
 
-    def transform(self, X: pd.DataFrame):
+    def transform(self, X: pd.DataFrame, y: pd.DataFrame = None):
         df = self.feature_builder.transform(X)
         # Return DataFrame or numpy
         if isinstance(df, pd.DataFrame):
             self.feature_names = list(df.columns)
         if self.return_numpy:
             return df.to_numpy(dtype=float)
+        
         return df
 
     # helps with debugging and pipelines

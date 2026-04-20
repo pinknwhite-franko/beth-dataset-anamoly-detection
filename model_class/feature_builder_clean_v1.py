@@ -73,6 +73,7 @@ class FeatureBuilder:
             df[f"{col}_hash"] = df[col].apply(lambda x: self._hash(str(x)))
             self.hash_feature_lookup[col] = df[[col, f"{col}_hash"]].drop_duplicates().to_dict(orient='list')
         return df
+        
     
     def _compute_frequency_encoding_time_based(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.sort_values(["hostName", "timestamp"]).reset_index(drop=True).copy()
@@ -151,9 +152,26 @@ class FeatureBuilder:
         df['is_parent_system_process'] = df['parentProcessId'].isin([0, 1, 2]).astype(int)
         df['is_system_process'] = df['processId'].isin([0, 1, 2]).astype(int)
 
-        # What: get parent process info and append it to the dataframe
-        # Why: get parent process information to expand information on child parent process relationship
+
+        df["parentProcessName"] = df["parentProcessName"].fillna("NO_PARENT")
         df["parent_missing"] = df["parentUserId"].isna().astype(int)
+
+        # What: Binary encoding of userId based on whether it is below 1000 or not.
+        # Why: Distinguish between system/OS users and regular users, as system activities often
+        df["userId_binary"]  = df["userId"].apply(lambda x: 1 if x < 1000 else 0)
+
+        # What: Binary encoding of parentUserId based on whether it is below 1000 or not.
+        # Why: Distinguish between system/OS users and regular users, as system activities often
+        df["parentUserId"] = df["parentUserId"].fillna(-1)
+        df["parentUserId_binary"] = (
+            (df["parentUserId"] < 1000)
+        ).astype(int)
+
+        print(len(df), "Null value counts after imputation")
+        for col in df.columns:
+            null_sum = df[col].isnull().sum()
+            if null_sum > 0:
+                print(f"{col} null value count: {null_sum}",)
 
         # What: Did the child process run under the same user as its parent?
         # Why: Malicious processes may run under different user accounts than their parent processes.
@@ -162,11 +180,6 @@ class FeatureBuilder:
         # What: Did the parent fork and re-exec itself or spawn a different binary?
         # why: Malicious activity may involve a process spawning a different binary than itself.
         df["same_process_name_as_parent"] = np.where(df["parentProcessName"].notnull(),(df["processName"] == df["parentProcessName"]).astype(int), None)
-
-        # What: Binary encoding of userId based on whether it is below 1000 or not.
-        # Why: Distinguish between system/OS users and regular users, as system activities often
-        df["userId_binary"]  = df["userId"].apply(lambda x: 1 if x < 1000 else 0)
-        df["parentUserId_binary"]  = df["parentUserId"].apply(lambda x: 1 if x < 1000 else 0)
 
         # What: mount namespace binary encoding
         # Why: Distinguish between default and custom mount namespaces. all logs with userId ≥1000
@@ -202,6 +215,7 @@ class FeatureBuilder:
         df['args_has_path'] = df['args'].apply(lambda x: int(any('pathname' in d['name'] for d in x)))
 
         print(len(df), "rows after processing arg info")
+
 
         return df[[
             "processId_eventId_past_freq",
