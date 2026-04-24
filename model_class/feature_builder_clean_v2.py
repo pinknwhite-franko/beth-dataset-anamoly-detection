@@ -72,16 +72,20 @@ class FeatureBuilder:
         host_prior_count = df.groupby(["hostName", "processId", "eventId"]).cumcount()
         df[f"processId_eventId_past_count"] = host_prior_count
         df[f"processId_eventId_is_first_seen"] = (host_prior_count == 0).astype(int)
-
+        
+        # df[f"processId_eventId_rarity"] = np.where(host_prior_total > 0,  host_prior_count / host_prior_total, 0.0)
+        # print(df['processId_eventId_rarity'].sort_values(ascending=False))
         smoothed_freq = (host_prior_count + 1) / (host_prior_total + 2)
         df[f"processId_eventId_rarity"] =  -np.log(smoothed_freq)
 
         # Calculate the frequency for each column per host)
-        for col in ["processId", "threadId", "userId", "mountNamespace","eventId","parentProcessId"]:
+        for col in ["processName", "processId", "threadId", "userId", "mountNamespace","eventId","parentProcessId"]:
             host_prior_count = df.groupby(["hostName", col]).cumcount()
             df[f"{col}_is_first_seen"] = (host_prior_count == 0).astype(int)
             df[f"{col}_past_count"] = host_prior_count
 
+            # df[f"{col}_rarity"] = np.where(host_prior_total > 0,  host_prior_count / host_prior_total, 0.0)
+            # print(df[f"{col}_rarity"].sort_values(ascending=False))
             smoothed_freq = (host_prior_count + 1) / (host_prior_total + 2)
             df[f"{col}_rarity"] = -np.log(smoothed_freq)
 
