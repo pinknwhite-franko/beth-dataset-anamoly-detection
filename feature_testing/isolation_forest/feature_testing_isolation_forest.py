@@ -3,7 +3,6 @@ import sys
 import pandas as pd
 import numpy as np
 
-from sklearn.preprocessing import RobustScaler, FunctionTransformer
 from sklearn.ensemble import IsolationForest
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
@@ -177,23 +176,12 @@ def build_preprocessor(selected_features):
         group: [c for c in cols if c in selected_features]
         for group, cols in FEATURE_GROUPS.items()
     }
-
-    log_count_pipeline = Pipeline([
-        ("log", FunctionTransformer(
-            lambda x: np.log1p(np.clip(x, 0, None)),
-            feature_names_out="one-to-one",
-            validate=False
-        )),
-        ("scale", RobustScaler()),
-    ])
-
-    scale_pipeline = Pipeline([("scale", RobustScaler())])
-
+    # Notebook now uses passthrough for all feature groups (no scaling).
     group_transformers = {
-        "count": log_count_pipeline,
-        "rarity": scale_pipeline,
+        "count": "passthrough",
+        "rarity": "passthrough",
         "first_seen": "passthrough",
-        "scale_other": scale_pipeline,
+        "scale_other": "passthrough",
         "binary": "passthrough",
         "pass": "passthrough",
     }
