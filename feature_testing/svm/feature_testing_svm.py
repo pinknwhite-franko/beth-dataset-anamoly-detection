@@ -1,4 +1,5 @@
 import os
+import sys
 import pandas as pd
 import numpy as np
 
@@ -7,6 +8,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 from model_class.feature_builder_clean_v2 import FeatureBuilder
 from model_class.feature_builder_transformer import FeatureBuilderTransformer
 
@@ -58,7 +60,7 @@ from model_class.feature_builder_transformer import FeatureBuilderTransformer
 
 
 # Where output CSVs will be saved
-OUT_DIR = os.path.join(os.getcwd(), "./features_data/isolation_forest")
+OUT_DIR = os.path.join(os.getcwd(), "./out")
 
 # These groups mirror the notebook preprocessing setup.
 # We keep them grouped so feature_testing.py stays aligned with model_training.ipynb.
@@ -119,7 +121,7 @@ def read_data(data_dir=None):
     to evaluate feature behavior on validation only.
     """
     if data_dir is None:
-        data_dir = os.path.join(os.getcwd(), "datasets", "raw")
+        data_dir = os.path.join(os.getcwd(), "../../datasets/raw")
 
     def _load_x(name):
         path = os.path.join(data_dir, name)
@@ -131,7 +133,7 @@ def read_data(data_dir=None):
         # Drop target / helper columns so only raw input features remain
         return df.drop(columns=[c for c in ["sus", "evil"] if c in df.columns])
 
-    return _load_x("labelled_training_data.csv"), _load_x("labelled_validation_data.csv")
+    return _load_x("../../datasets/raw/labelled_training_data.csv"), _load_x("../../datasets/raw/labelled_validation_data.csv")
 
 
 def build_features(X_train, X_val):
