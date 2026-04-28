@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 from sklearn.preprocessing import RobustScaler, FunctionTransformer
-from sklearn.ensemble import IsolationForest
+from sklearn.linear_model import SGDOneClassSVM
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
@@ -67,6 +67,7 @@ OUT_DIR = os.path.join(os.getcwd(), "./out")
 FEATURE_GROUPS = {
     "count": [
         "processId_eventId_past_count",
+        "processName_past_count",
         "processId_past_count",
         "threadId_past_count",
         "eventId_past_count",
@@ -76,6 +77,7 @@ FEATURE_GROUPS = {
     ],
     "rarity": [
         "processId_eventId_rarity",
+        "processName_rarity",
         "processId_rarity",
         "threadId_rarity",
         "eventId_rarity",
@@ -85,6 +87,7 @@ FEATURE_GROUPS = {
     ],
     "first_seen": [
         "processId_eventId_is_first_seen",
+        "processName_is_first_seen",
         "processId_is_first_seen",
         "threadId_is_first_seen",
         "eventId_is_first_seen",
@@ -97,6 +100,7 @@ FEATURE_GROUPS = {
         "stackAddresses_unique_ratio",
         "child_process_spawn_rate_so_far",
     ],
+
     "binary": [
         "userId_binary",
         "parentUserId_binary",
@@ -106,7 +110,7 @@ FEATURE_GROUPS = {
         "returnValue",
         "returnValue_is_error",
         "args_has_path",
-    ],
+    ]
 }
 
 # Flat list of every candidate feature we want to consider
@@ -221,8 +225,8 @@ def validation_metrics(model, X_train, X_val):
     We also compare train/validation score distributions to see whether
     validation looks similar to training. Lower objective is better.
     """
-    train_scores = -model.score_samples(X_train)
-    val_scores = -model.score_samples(X_val)
+    train_scores = -model.decision_function(X_train)
+    val_scores = -model.decision_function(X_val)
 
     val_pred = model.predict(X_val)
     predicted_outliers = int(np.sum(val_pred == -1))
@@ -246,19 +250,14 @@ def validation_metrics(model, X_train, X_val):
     }
 
 
-def fit_iforest_on_features(X_train, selected_features, random_state=2000):
+def fit_sgd_on_features(X_train, selected_features, random_state=42):
     """
-    Build the full preprocessing + Isolation Forest pipeline
+    Build the full preprocessing + SGDOneClassSVM pipeline
     and fit it on training data only.
     """
     model = Pipeline([
         ("scaler", build_preprocessor(selected_features)),
-        ("iforest", IsolationForest(
-            n_estimators=100,
-            contamination="auto",
-            max_features=0.7,
-            random_state=random_state
-        ))
+        ("clf", SGDOneClassSVM(nu=0.05, random_state=random_state))
     ])
     model.fit(X_train[selected_features])
     return model
@@ -278,7 +277,7 @@ def permutation_importance_validation(X_train, X_val, selected_features, random_
 
     Bigger objective increase = more important feature
     """
-    model = fit_iforest_on_features(X_train, selected_features, random_state=2000)
+    model = fit_sgd_on_features(X_train, selected_features, random_state=random_state)
     baseline = validation_metrics(model, X_train[selected_features], X_val[selected_features])
 
     rng = np.random.RandomState(random_state)
@@ -306,7 +305,7 @@ def permutation_importance_validation(X_train, X_val, selected_features, random_
     return pd.DataFrame(rows).sort_values("objective_increase", ascending=False).reset_index(drop=True)
 
 
-def evaluate_feature_subsets_on_validation(X_train, X_val, imp_df, k_list, random_state=2000):
+def evaluate_feature_subsets_on_validation(X_train, X_val, imp_df, k_list, random_state=42):
     """
     Compare feature subsets on validation.
 
@@ -321,7 +320,7 @@ def evaluate_feature_subsets_on_validation(X_train, X_val, imp_df, k_list, rando
     imp_sorted = imp_df.sort_values("objective_increase", ascending=False).reset_index(drop=True)
 
     def fit_eval(features, scenario):
-        model = fit_iforest_on_features(X_train, features, random_state=random_state)
+        model = fit_sgd_on_features(X_train, features, random_state=random_state)
         metrics = validation_metrics(model, X_train[features], X_val[features])
         return {
             "scenario": scenario,
@@ -383,7 +382,7 @@ def main():
         X_val_f,
         imp_df,
         k_list=[5, 10, 15],
-        random_state=2000
+        random_state=42
     )
     results_df.to_csv(os.path.join(OUT_DIR, "validation_selection_results.csv"), index=False)
 
